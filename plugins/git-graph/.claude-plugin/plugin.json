@@ -1,6 +1,6 @@
 {
   "name": "git-graph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "접었다 펼 수 있는 깃 커밋 그래프 패널 (/git-graph)",
   "types": "./types/index.d.ts",
   "author": {

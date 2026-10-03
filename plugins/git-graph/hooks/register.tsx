@@ -17,8 +17,43 @@ async function git($: EngineInterface, dir: string | null, args: string[]) {
   return $.process.run(argv, { timeoutMs: 15_000 })
 }
 
+const POLL_MS = 3_000
+const FULL_REFRESH_MS = 60_000
+let lastSeen = ''
+let lastFull = 0
+let isPolling = false
+
+// Where HEAD and every branch and tag point: cheap to read, and it changes
+// on any commit, checkout, merge, rebase, reset, fetch or branch edit.
+async function fingerprint($: EngineInterface, dir: string | null): Promise<string> {
+  const [refs, head] = await Promise.all([
+    git($, dir, ['show-ref', '--head']),
+    git($, dir, ['symbolic-ref', '-q', 'HEAD']),
+  ])
+  return refs.exitCode === 0 ? `${head.stdout}\n${refs.stdout}` : ''
+}
+
+// Runs on a timer: redraws when the repository moved, and once a minute
+// anyway so the "n minutes ago" times stay current.
+async function poll($: EngineInterface): Promise<void> {
+  if (isPolling) return
+  isPolling = true
+  try {
+    const g = await read($, graph)
+    const dir = g && !('error' in g) ? g.root : await read($, repo)
+    const isStale = (await $.clock.now()) - lastFull > FULL_REFRESH_MS
+    if (isStale || (await fingerprint($, dir)) !== lastSeen) await refresh($)
+  } catch {
+    // A failed check just waits for the next tick.
+  } finally {
+    isPolling = false
+  }
+}
+
 async function refresh($: EngineInterface): Promise<void> {
+  lastFull = await $.clock.now()
   const dir = await read($, repo)
+  lastSeen = await fingerprint($, dir).catch(() => '')
   const n = await read($, limit)
   let next: Graph | GraphError
   try {
@@ -235,6 +270,7 @@ export const register: Register = on => {
       description: '깃 그래프 패널 열기 (인자로 저장소 경로를 주면 그 저장소를 표시)',
     })
     await refresh($)
+    $.clock.every(POLL_MS, () => void poll($))
     void $.ui.open({ id: PANE, title: 'Git graph' })
     return result
   })
