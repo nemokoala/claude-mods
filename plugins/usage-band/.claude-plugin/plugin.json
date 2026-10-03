@@ -1,0 +1,9 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "입력창 위에 5시간·주간·Fable 사용량 게이지를 표시",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "nemokoala"
+  }
+}
