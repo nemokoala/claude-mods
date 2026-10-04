@@ -7,11 +7,15 @@ export type Commit = {
   when: string
 }
 
+export type Changes = { staged: number; unstaged: number; untracked: number }
+
 export type Graph = {
   root: string
   branch: string
+  /** Newest first; led by a `WORKTREE` row while there are uncommitted changes. */
   commits: Commit[]
   ascii: string[]
+  changes: Changes | null
 }
 
 export type GraphError = { error: string }

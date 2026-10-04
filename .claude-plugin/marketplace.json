@@ -16,8 +16,8 @@
     {
       "name": "git-graph",
       "source": "./plugins/git-graph",
-      "description": "접었다 펼 수 있는 깃 커밋 그래프 패널, 저장소가 바뀌면 자동 갱신 (/git-graph)",
-      "version": "0.1.1"
+      "description": "깃 커밋 그래프 패널: 미커밋 변경 표시, 자동 갱신, 접기/펼치기 (/git-graph)",
+      "version": "0.1.2"
     }
   ]
 }

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Commit, Graph, GraphError } from '../types'
+import type { Changes, Commit, Graph, GraphError } from '../types'
 
 const PANE = 'git-graph'
 const repo = atom({ plugin: 'git-graph', key: 'repo' } as const, null)
@@ -14,7 +14,32 @@ const LANE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06
 
 async function git($: EngineInterface, dir: string | null, args: string[]) {
   const argv = dir ? ['git', '-C', dir, ...args] : ['git', ...args]
-  return $.process.run(argv, { timeoutMs: 15_000 })
+  // GIT_OPTIONAL_LOCKS=0: `status` must never take the index lock a git
+  // command the person runs at the same moment needs.
+  return $.process.run(argv, { timeoutMs: 15_000, env: { GIT_OPTIONAL_LOCKS: '0' } })
+}
+
+// The pseudo-commit standing for the working tree's uncommitted changes.
+const WORKTREE = 'WORKTREE'
+
+function countChanges(porcelain: string): Changes | null {
+  const c: Changes = { staged: 0, unstaged: 0, untracked: 0 }
+  for (const line of porcelain.split('\n')) {
+    if (line.length < 3) continue
+    const [x, y] = [line[0], line[1]]
+    if (x === '?' && y === '?') { c.untracked++; continue }
+    if (x !== ' ') c.staged++
+    if (y !== ' ') c.unstaged++
+  }
+  return c.staged + c.unstaged + c.untracked > 0 ? c : null
+}
+
+function describeChanges(c: Changes): string {
+  return [
+    c.staged ? `스테이징 ${c.staged}` : '',
+    c.unstaged ? `수정 ${c.unstaged}` : '',
+    c.untracked ? `새 파일 ${c.untracked}` : '',
+  ].filter(Boolean).join(' · ')
 }
 
 const POLL_MS = 3_000
@@ -23,14 +48,16 @@ let lastSeen = ''
 let lastFull = 0
 let isPolling = false
 
-// Where HEAD and every branch and tag point: cheap to read, and it changes
-// on any commit, checkout, merge, rebase, reset, fetch or branch edit.
+// Where HEAD and every branch and tag point, and which files are changed:
+// it moves on any commit, checkout, merge, rebase, reset, fetch, branch
+// edit, or a file edited, staged or added.
 async function fingerprint($: EngineInterface, dir: string | null): Promise<string> {
-  const [refs, head] = await Promise.all([
+  const [refs, head, status] = await Promise.all([
     git($, dir, ['show-ref', '--head']),
     git($, dir, ['symbolic-ref', '-q', 'HEAD']),
+    git($, dir, ['status', '--porcelain']),
   ])
-  return refs.exitCode === 0 ? `${head.stdout}\n${refs.stdout}` : ''
+  return refs.exitCode === 0 ? `${head.stdout}\n${refs.stdout}\n${status.stdout}` : ''
 }
 
 // Runs on a timer: redraws when the repository moved, and once a minute
@@ -62,12 +89,15 @@ async function refresh($: EngineInterface): Promise<void> {
       next = { error: `${dir ?? '현재 폴더'}는 깃 저장소가 아니에요. /git-graph <경로> 로 저장소를 지정하세요.` }
     } else {
       const root = top.stdout.trim()
-      const [head, log, ascii] = await Promise.all([
+      const [head, headSha, log, ascii, status] = await Promise.all([
         git($, root, ['rev-parse', '--abbrev-ref', 'HEAD']),
+        git($, root, ['rev-parse', '-q', '--verify', 'HEAD']),
         git($, root, ['log', '--all', '--topo-order', '-n', String(n),
           `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%ar`]),
         git($, root, ['log', '--all', '--graph', '--oneline', '--decorate', '-n', String(n)]),
+        git($, root, ['status', '--porcelain']),
       ])
+      const changes = countChanges(status.stdout)
       const commits: Commit[] = log.stdout.split('\n').filter(Boolean).map(line => {
         const [sha, parents, refs, subject, author, when] = line.split(SEP)
         return {
@@ -79,11 +109,26 @@ async function refresh($: EngineInterface): Promise<void> {
           when: when ?? '',
         }
       })
+      const asciiLines = ascii.stdout.split('\n').filter(Boolean)
+      if (changes) {
+        // Uncommitted work sits on top of HEAD, as its would-be child.
+        const parent = headSha.exitCode === 0 ? headSha.stdout.trim() : ''
+        commits.unshift({
+          sha: WORKTREE,
+          parents: parent ? [parent] : [],
+          refs: [],
+          subject: '커밋하지 않은 변경',
+          author: describeChanges(changes),
+          when: '',
+        })
+        asciiLines.unshift(`◌ 커밋하지 않은 변경 (${describeChanges(changes)})`)
+      }
       next = {
         root,
         branch: head.stdout.trim(),
         commits,
-        ascii: ascii.stdout.split('\n').filter(Boolean),
+        ascii: asciiLines,
+        changes,
       }
     }
   } catch (err) {
@@ -198,13 +243,21 @@ function svgGraph(g: Graph, W: number): { source: string; height: number } {
         if (cy < y2) swing(x2)
       }
     }
-    parts.push(`<path d="${d}" stroke="${color(e.lane)}" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.9"/>`)
+    const dash = g.commits[e.from].sha === WORKTREE ? ' stroke-dasharray="3 3"' : ''
+    parts.push(`<path d="${d}" stroke="${color(e.lane)}" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.9"${dash}/>`)
   }
 
   g.commits.forEach((c, row) => {
     const cx = x(placed[row])
     const cy = y(row)
     const col = color(placed[row])
+    if (c.sha === WORKTREE) {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="5.5" class="bg" stroke="${col}" stroke-width="2" stroke-dasharray="2.5 2"/>`)
+      const tx = textX
+      parts.push(`<text x="${tx}" y="${cy + 4}" class="wt">${esc(c.subject)}</text>`)
+      parts.push(`<text x="${tx + textWidth(c.subject, FS) + 12}" y="${cy + 4}" class="meta">${esc(c.author)}</text>`)
+      return
+    }
     if (c.refs.some(r => r.startsWith('HEAD'))) {
       parts.push(`<circle cx="${cx}" cy="${cy}" r="6.5" class="bg" stroke="${col}" stroke-width="2.5"/>`)
       parts.push(`<circle cx="${cx}" cy="${cy}" r="2.5" fill="${col}"/>`)
@@ -247,12 +300,13 @@ function svgGraph(g: Graph, W: number): { source: string; height: number } {
     text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif;font-size:${FS}px}
     .sha{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:11px;fill:#8b949e}
     .subj{fill:#1f2328}.meta{fill:#6e7781;font-size:11px}.bg{fill:#ffffff}
+    .wt{fill:#b45309;font-style:italic;font-weight:600}
     .b-head{fill:#3b82f6}.t-head{fill:#ffffff;font-size:11px;font-weight:600}
     .b-local{fill:#10b98126;stroke:#10b981}.t-local{fill:#047857;font-size:11px}
     .b-remote{fill:#8b949e22;stroke:#8b949e}.t-remote{fill:#57606a;font-size:11px}
     .b-tag{fill:#f59e0b26;stroke:#f59e0b}.t-tag{fill:#b45309;font-size:11px}
     @media (prefers-color-scheme: dark){
-      .subj{fill:#e6edf3}.meta{fill:#8b949e}.bg{fill:#1e1e1e}
+      .subj{fill:#e6edf3}.meta{fill:#8b949e}.bg{fill:#1e1e1e}.wt{fill:#fbbf24}
       .t-local{fill:#6ee7b7}.t-remote{fill:#c9d1d9}.t-tag{fill:#fcd34d}
     }
   </style>`
@@ -334,6 +388,9 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {header}
+          {g.changes ? (
+            <Text color="#f59e0b" wrap="truncate-end">◌ 커밋하지 않은 변경 ({describeChanges(g.changes)})</Text>
+          ) : null}
           {head ? <Text dimColor wrap="truncate-end">{head.subject}</Text> : null}
         </Box>
       )
