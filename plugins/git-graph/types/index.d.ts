@@ -27,6 +27,8 @@ declare module 'claude-code' {
       isCollapsed: boolean
       limit: number
       graph: Graph | GraphError | null
+      /** The first lane drawn when there are more lanes than the graph area holds. */
+      laneOffset: number
     }
   }
 }

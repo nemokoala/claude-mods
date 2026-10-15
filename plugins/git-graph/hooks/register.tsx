@@ -8,6 +8,7 @@ const repo = atom({ plugin: 'git-graph', key: 'repo' } as const, null)
 const isCollapsed = atom({ plugin: 'git-graph', key: 'isCollapsed' } as const, false)
 const limit = atom({ plugin: 'git-graph', key: 'limit' } as const, 40)
 const graph = atom({ plugin: 'git-graph', key: 'graph' } as const, null)
+const laneOffset = atom({ plugin: 'git-graph', key: 'laneOffset' } as const, 0)
 
 const SEP = '\x1f'
 const LANE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#ef4444', '#84cc16']
@@ -204,17 +205,53 @@ function clip(s: string, maxW: number, size: number): string {
   return out + '…'
 }
 
-function svgGraph(g: Graph, W: number): { source: string; height: number } {
+const PAD = 12
+// The graph area never takes more than this, nor more than GRAPH_SHARE of the
+// pane: lanes beyond it are panned to with ◀ ▶.
+const GRAPH_MAX = 160
+const GRAPH_SHARE = 0.3
+const MIN_VISIBLE_LANES = 4
+
+// Lanes draw closer together as there are more of them.
+const laneSpacing = (lanes: number) => (lanes <= 6 ? 14 : lanes <= 10 ? 12 : 10)
+
+// How far apart lanes are drawn and how many fit in the graph area at once.
+export function laneView(lanes: number, W: number): { laneW: number; visible: number } {
+  const laneW = laneSpacing(lanes)
+  const maxW = Math.min(GRAPH_MAX, Math.round(W * GRAPH_SHARE))
+  const fit = Math.max(MIN_VISIBLE_LANES, Math.floor((maxW - 2 * PAD) / laneW) + 1)
+  return { laneW, visible: Math.min(lanes, fit) }
+}
+
+export type GraphView = {
+  source: string
+  height: number
+  /** Lanes the whole history needs, how many are drawn, and the first drawn. */
+  lanes: number
+  visible: number
+  offset: number
+}
+
+export function svgGraph(g: Graph, W: number, offset = 0): GraphView {
   const ROW = 28
-  const LANE = 14
-  const PAD = 12
   const FS = 12
   const { placed, edges, width } = layout(g.commits)
+  const { laneW, visible } = laneView(width, W)
+  const off = Math.max(0, Math.min(offset, width - visible))
   const H = g.commits.length * ROW + 6
-  const x = (lane: number) => PAD + lane * LANE
+  const x = (lane: number) => PAD + (lane - off) * laneW
   const y = (row: number) => 3 + row * ROW + ROW / 2
   const color = (lane: number) => LANE_COLORS[lane % LANE_COLORS.length]
-  const textX = PAD + width * LANE + 8
+  const dotR = laneW >= 14 ? 4.5 : 4
+  const textX = PAD + visible * laneW + 8
+  // The graph area's edges: lanes outside them are clipped and faded.
+  const areaL = PAD - laneW / 2
+  const areaR = PAD + (visible - 0.5) * laneW
+  const hiddenLeft = off > 0
+  const hiddenRight = off + visible < width
+  const isClipped = hiddenLeft || hiddenRight
+  const isInView = (lane: number) => lane >= off && lane < off + visible
+  const lines: string[] = []
   const parts: string[] = []
 
   for (const e of edges) {
@@ -244,27 +281,34 @@ function svgGraph(g: Graph, W: number): { source: string; height: number } {
       }
     }
     const dash = g.commits[e.from].sha === WORKTREE ? ' stroke-dasharray="3 3"' : ''
-    parts.push(`<path d="${d}" stroke="${color(e.lane)}" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.9"${dash}/>`)
+    lines.push(`<path d="${d}" stroke="${color(e.lane)}" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.9"${dash}/>`)
   }
 
   g.commits.forEach((c, row) => {
-    const cx = x(placed[row])
+    const lane = placed[row] ?? 0
+    const cx = x(lane)
     const cy = y(row)
-    const col = color(placed[row])
+    const col = color(lane)
+    // A commit in a lane panned out of view: a marker at that edge, in its color.
+    if (!isInView(lane)) {
+      parts.push(lane < off
+        ? `<path d="M1 ${cy} L6 ${cy - 4} L6 ${cy + 4} Z" fill="${col}"/>`
+        : `<path d="M${areaR + 7} ${cy} L${areaR + 2} ${cy - 4} L${areaR + 2} ${cy + 4} Z" fill="${col}"/>`)
+    }
     if (c.sha === WORKTREE) {
-      parts.push(`<circle cx="${cx}" cy="${cy}" r="5.5" class="bg" stroke="${col}" stroke-width="2" stroke-dasharray="2.5 2"/>`)
+      lines.push(`<circle cx="${cx}" cy="${cy}" r="5.5" class="bg" stroke="${col}" stroke-width="2" stroke-dasharray="2.5 2"/>`)
       const tx = textX
       parts.push(`<text x="${tx}" y="${cy + 4}" class="wt">${esc(c.subject)}</text>`)
       parts.push(`<text x="${tx + textWidth(c.subject, FS) + 12}" y="${cy + 4}" class="meta">${esc(c.author)}</text>`)
       return
     }
     if (c.refs.some(r => r.startsWith('HEAD'))) {
-      parts.push(`<circle cx="${cx}" cy="${cy}" r="6.5" class="bg" stroke="${col}" stroke-width="2.5"/>`)
-      parts.push(`<circle cx="${cx}" cy="${cy}" r="2.5" fill="${col}"/>`)
+      lines.push(`<circle cx="${cx}" cy="${cy}" r="6.5" class="bg" stroke="${col}" stroke-width="2.5"/>`)
+      lines.push(`<circle cx="${cx}" cy="${cy}" r="2.5" fill="${col}"/>`)
     } else if (c.parents.length > 1) {
-      parts.push(`<circle cx="${cx}" cy="${cy}" r="4.5" class="bg" stroke="${col}" stroke-width="2"/>`)
+      lines.push(`<circle cx="${cx}" cy="${cy}" r="${dotR}" class="bg" stroke="${col}" stroke-width="2"/>`)
     } else {
-      parts.push(`<circle cx="${cx}" cy="${cy}" r="4.5" fill="${col}"/>`)
+      lines.push(`<circle cx="${cx}" cy="${cy}" r="${dotR}" fill="${col}"/>`)
     }
 
     let tx = textX
@@ -310,8 +354,26 @@ function svgGraph(g: Graph, W: number): { source: string; height: number } {
       .t-local{fill:#6ee7b7}.t-remote{fill:#c9d1d9}.t-tag{fill:#fcd34d}
     }
   </style>`
-  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${style}${parts.join('')}</svg>`
-  return { source, height: H }
+  // Lines and dots; clipped to the graph area, the cut edges faded out by a
+  // mask (any background shows through) when some lanes are panned out of view.
+  let graphArea = lines.join('')
+  if (isClipped) {
+    const FADE = 10
+    const fadeL = hiddenLeft ? areaL + FADE : areaL
+    const fadeR = hiddenRight ? areaR - FADE : areaR
+    const defs = `<defs>
+      <linearGradient id="fadeL"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>
+      <linearGradient id="fadeR"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
+      <mask id="lanes" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">
+        ${hiddenLeft ? `<rect x="${areaL}" y="0" width="${FADE}" height="${H}" fill="url(#fadeL)"/>` : ''}
+        <rect x="${fadeL}" y="0" width="${fadeR - fadeL}" height="${H}" fill="#fff"/>
+        ${hiddenRight ? `<rect x="${fadeR}" y="0" width="${FADE}" height="${H}" fill="url(#fadeR)"/>` : ''}
+      </mask>
+    </defs>`
+    graphArea = `${defs}<g mask="url(#lanes)">${graphArea}</g>`
+  }
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${style}${graphArea}${parts.join('')}</svg>`
+  return { source, height: H, lanes: width, visible, offset: off }
 }
 
 // ---- hooks --------------------------------------------------------------
@@ -331,7 +393,10 @@ export const register: Register = on => {
 
   on('command.run', { command: 'git-graph' }, async ($, e) => {
     const arg = e.args.trim().replace(/^["']|["']$/g, '')
-    if (arg) await update($, repo, () => arg)
+    if (arg) {
+      await update($, repo, () => arg)
+      await update($, laneOffset, () => 0)
+    }
     await update($, isCollapsed, () => false)
     await refresh($)
     await $.ui.open({ id: PANE, title: 'Git graph' })
@@ -411,10 +476,22 @@ export const register: Register = on => {
 
     if (Svg) {
       const W = Math.max(360, Math.min(1100, Math.round(e.props.bodyColumns * 7.5)))
-      const { source, height } = svgGraph(g, W)
+      const { source, height, lanes, visible, offset } = svgGraph(g, W, await read($, laneOffset))
+      const maxOff = lanes - visible
+      const step = Math.max(1, Math.floor(visible / 2))
+      const pan = (by: number) => update($, laneOffset, v => Math.max(0, Math.min(maxOff, Math.min(v, maxOff) + by)))
+      // Only while some lanes do not fit: pan the graph area over them.
+      const panner = maxOff > 0 ? (
+        <Box flexDirection="row" alignItems="center" gap={1}>
+          <Button key="lanes-left" hotkey="h" dimColor={offset === 0} label="◀" onPress={() => pan(-step)} />
+          <Text dimColor>레인 {offset + 1}–{offset + visible} / {lanes}</Text>
+          <Button key="lanes-right" hotkey="l" dimColor={offset === maxOff} label="▶" onPress={() => pan(step)} />
+        </Box>
+      ) : null
       return (
         <Box flexDirection="column" gap={1}>
           {header}
+          {panner}
           <Svg source={source} alt={`${name} 커밋 그래프, 최근 ${g.commits.length}개`} width={W} height={height} />
           <Box flexDirection="row">{more}</Box>
         </Box>
