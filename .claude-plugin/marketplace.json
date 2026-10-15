@@ -16,8 +16,8 @@
     {
       "name": "git-graph",
       "source": "./plugins/git-graph",
-      "description": "깃 커밋 그래프 패널: 미커밋 변경 표시, 자동 갱신, 접기/펼치기, 레인이 많으면 ◀ ▶ 좌우 이동 (/git-graph)",
-      "version": "0.1.3"
+      "description": "깃 커밋 그래프 패널: 미커밋 변경 표시, 자동 갱신, 접힌 상태로 시작(▸ 또는 c로 펼치기), 레인이 많으면 ◀ ▶ 좌우 이동 (/git-graph)",
+      "version": "0.1.4"
     }
   ]
 }

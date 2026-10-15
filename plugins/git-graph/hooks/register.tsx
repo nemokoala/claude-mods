@@ -5,7 +5,8 @@ import type { Changes, Commit, Graph, GraphError } from '../types'
 
 const PANE = 'git-graph'
 const repo = atom({ plugin: 'git-graph', key: 'repo' } as const, null)
-const isCollapsed = atom({ plugin: 'git-graph', key: 'isCollapsed' } as const, false)
+// Starts folded: the pane opens with the header only until it is expanded.
+const isCollapsed = atom({ plugin: 'git-graph', key: 'isCollapsed' } as const, true)
 const limit = atom({ plugin: 'git-graph', key: 'limit' } as const, 40)
 const graph = atom({ plugin: 'git-graph', key: 'graph' } as const, null)
 const laneOffset = atom({ plugin: 'git-graph', key: 'laneOffset' } as const, 0)
