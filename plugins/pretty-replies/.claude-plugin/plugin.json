@@ -1,0 +1,9 @@
+{
+  "name": "pretty-replies",
+  "version": "0.1.0",
+  "description": "답변 왼쪽에 테마색 세로 테두리와 여백을 그림 (/pretty)",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "nemokoala"
+  }
+}
