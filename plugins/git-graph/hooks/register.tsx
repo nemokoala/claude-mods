@@ -5,8 +5,8 @@ import type { Changes, Commit, Graph, GraphError } from '../types'
 
 const PANE = 'git-graph'
 const repo = atom({ plugin: 'git-graph', key: 'repo' } as const, null)
-// Starts folded: the pane opens with the header only until it is expanded.
-const isCollapsed = atom({ plugin: 'git-graph', key: 'isCollapsed' } as const, true)
+// The pane opens only on /git-graph, and opens with the graph showing.
+const isCollapsed = atom({ plugin: 'git-graph', key: 'isCollapsed' } as const, false)
 const limit = atom({ plugin: 'git-graph', key: 'limit' } as const, 40)
 const graph = atom({ plugin: 'git-graph', key: 'graph' } as const, null)
 const laneOffset = atom({ plugin: 'git-graph', key: 'laneOffset' } as const, 0)
@@ -64,8 +64,12 @@ async function fingerprint($: EngineInterface, dir: string | null): Promise<stri
 
 // Runs on a timer: redraws when the repository moved, and once a minute
 // anyway so the "n minutes ago" times stay current.
+async function isOpen($: EngineInterface): Promise<boolean> {
+  return (await $.ui.panes()).some(pane => pane.id === PANE)
+}
+
 async function poll($: EngineInterface): Promise<void> {
-  if (isPolling) return
+  if (isPolling || !(await isOpen($))) return
   isPolling = true
   try {
     const g = await read($, graph)
@@ -386,9 +390,8 @@ export const register: Register = on => {
       name: 'git-graph',
       description: '깃 그래프 패널 열기 (인자로 저장소 경로를 주면 그 저장소를 표시)',
     })
-    await refresh($)
+    // Polling and redraws only run while the pane is open (see poll).
     $.clock.every(POLL_MS, () => void poll($))
-    void $.ui.open({ id: PANE, title: 'Git graph' })
     return result
   })
 
@@ -408,7 +411,7 @@ export const register: Register = on => {
   // Commits and checkouts usually happen during a turn: redraw after each one.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    await refresh($)
+    if (await isOpen($)) await refresh($)
     return result
   })
 
