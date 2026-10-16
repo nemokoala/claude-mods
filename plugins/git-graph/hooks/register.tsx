@@ -100,7 +100,7 @@ async function refresh($: EngineInterface): Promise<void> {
         git($, root, ['rev-parse', '-q', '--verify', 'HEAD']),
         git($, root, ['log', '--all', '--topo-order', '-n', String(n),
           `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%ar`]),
-        git($, root, ['log', '--all', '--graph', '--oneline', '--decorate', '-n', String(n)]),
+        git($, root, ['log', '--all', '--graph', '--decorate', '-n', String(n), '--format=%s%d  %h']),
         git($, root, ['status', '--porcelain']),
       ])
       const changes = countChanges(status.stdout)
@@ -316,32 +316,42 @@ export function svgGraph(g: Graph, W: number, offset = 0): GraphView {
       lines.push(`<circle cx="${cx}" cy="${cy}" r="${dotR}" fill="${col}"/>`)
     }
 
-    let tx = textX
-    const meta = `${c.author} · ${c.when}`
-    const metaW = textWidth(meta, FS - 1)
+    // The subject leads; the branch and tag badges, the short hash and who
+    // and when line up against the right edge.
+    const sha = c.sha.slice(0, 7)
     const right = W - PAD
-    parts.push(`<text x="${tx}" y="${cy + 4}" class="sha">${c.sha.slice(0, 7)}</text>`)
-    tx += 62
-
-    for (const raw of c.refs.slice(0, 3)) {
-      if (raw === 'HEAD') continue
+    const badges = c.refs.slice(0, 3).filter(raw => raw !== 'HEAD').map(raw => {
       const isHeadRef = raw.startsWith('HEAD -> ')
       const isTag = raw.startsWith('tag: ')
       const label = isHeadRef ? raw.slice(8) : isTag ? raw.slice(5) : raw
       const kind = isHeadRef ? 'head' : isTag ? 'tag' : raw.includes('/') ? 'remote' : 'local'
-      const bw = textWidth(label, FS - 1) + 14
-      parts.push(`<rect x="${tx}" y="${cy - 9}" width="${bw}" height="18" rx="9" class="b-${kind}"/>`)
-      parts.push(`<text x="${tx + 7}" y="${cy + 4}" class="t-${kind}">${esc(label)}</text>`)
-      tx += bw + 5
-    }
+      return { label, kind, w: textWidth(label, FS - 1) + 14 }
+    })
+    const badgesW = badges.reduce((w, b) => w + b.w + 5, 0)
 
-    const showMeta = right - metaW > tx + 80
-    const room = (showMeta ? right - metaW - 12 : right) - tx
+    // In a narrow pane the hash goes first, then who and when, so the
+    // subject keeps room to be read.
+    const who = `${c.author} · ${c.when}`
+    const meta = [
+      { text: `${sha}  ${who}`, hasSha: true, minSubject: 220 },
+      { text: who, hasSha: false, minSubject: 160 },
+      { text: '', hasSha: false, minSubject: 0 },
+    ].map(m => ({ ...m, w: m.text ? textWidth(m.text, FS - 1) + 12 : 0 }))
+      .find(m => right - m.w - badgesW - textX >= m.minSubject)!
+    let bx = right - meta.w - badgesW
+    const room = bx - textX - 8
     if (room > 30) {
-      parts.push(`<text x="${tx}" y="${cy + 4}" class="subj">${esc(clip(c.subject, room, FS))}</text>`)
+      parts.push(`<text x="${textX}" y="${cy + 4}" class="subj">${esc(clip(c.subject, room, FS))}</text>`)
     }
-    if (showMeta) {
-      parts.push(`<text x="${right}" y="${cy + 4}" text-anchor="end" class="meta">${esc(meta)}</text>`)
+    for (const b of badges) {
+      parts.push(`<rect x="${bx}" y="${cy - 9}" width="${b.w}" height="18" rx="9" class="b-${b.kind}"/>`)
+      parts.push(`<text x="${bx + 7}" y="${cy + 4}" class="t-${b.kind}">${esc(b.label)}</text>`)
+      bx += b.w + 5
+    }
+    if (meta.text) {
+      parts.push(`<text x="${right}" y="${cy + 4}" text-anchor="end" class="meta">`
+        + (meta.hasSha ? `<tspan class="sha">${sha}</tspan>${esc(meta.text.slice(sha.length))}` : esc(meta.text))
+        + '</text>')
     }
   })
 

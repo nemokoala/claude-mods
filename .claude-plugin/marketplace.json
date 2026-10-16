@@ -17,7 +17,7 @@
       "name": "git-graph",
       "source": "./plugins/git-graph",
       "description": "깃 커밋 그래프 패널: /git-graph로 열면 그래프가 펼쳐진 상태로 표시, 미커밋 변경 표시, 열려 있는 동안 자동 갱신, ▾ 또는 c로 접기, 레인이 많으면 ◀ ▶ 좌우 이동",
-      "version": "0.1.5"
+      "version": "0.1.6"
     },
     {
       "name": "pretty-replies",

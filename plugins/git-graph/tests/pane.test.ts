@@ -4,12 +4,13 @@ import type { On } from 'claude-code'
 const SEP = '\x1f'
 
 // What `git` prints in a repository with one commit on main.
-function gitOutput(args: readonly string[]): string {
-  const cmd = args.join(' ')
+function gitOutput(argv: readonly string[]): string {
+  const args = argv.slice(1)
+  const cmd = (args[0] === '-C' ? args.slice(2) : args).join(' ')
   if (cmd.includes('--show-toplevel')) return '/repo\n'
   if (cmd.includes('--abbrev-ref')) return 'main\n'
   if (cmd.includes('--verify')) return 'abc1234\n'
-  if (cmd.includes('--graph')) return '* abc1234 (HEAD -> main) init\n'
+  if (cmd.includes('--graph')) return '* init (HEAD -> main)  abc1234\n'
   if (cmd.startsWith('log')) return ['abc1234', '', 'HEAD -> main', 'init', 'me', '1 minute ago'].join(SEP) + '\n'
   return ''
 }
@@ -23,7 +24,7 @@ function engine(on: On) {
   on('process.run', async (_$, e) => ({
     value: {
       exitCode: 0,
-      stdout: gitOutput(e.argv.slice(e.argv.indexOf('git') + 1)),
+      stdout: gitOutput(e.argv),
       stderr: '',
       isStdoutTruncated: false,
       isStderrTruncated: false,
@@ -65,3 +66,26 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'more' })).toBeDefined()
   })
 }
+
+test('a commit row reads subject, badges, then the short hash', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await $.command.run({
+    command: 'git-graph',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  const ui = await $.ui.mount({
+    plugin: 'git-graph',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'git-graph',
+    props: { title: 'Git graph', isFocused: false, bodyColumns: 120 },
+  })
+  const svg = String((await ui.find({ type: 'Svg' }))?.props.source)
+  const row = svg.slice(svg.indexOf('class="subj"'))
+  expect(row.indexOf('>init<')).toBeGreaterThan(-1)
+  expect(row.indexOf('>init<')).toBeLessThan(row.indexOf('>main<'))
+  expect(row.indexOf('>main<')).toBeLessThan(row.indexOf('abc1234'))
+})
